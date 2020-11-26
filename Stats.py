@@ -8,6 +8,7 @@ from math import sqrt
 import statsmodels.formula.api as smf
 import warnings
 warnings.filterwarnings('ignore')
+from datetime import timedelta
 
 
 class RegressionModel:
@@ -131,22 +132,71 @@ class RegressionModel:
             plt.xlim(0, max(df_perf["Predicted"])*1.05)
 
 
-data = RegressionModel()
+# data = RegressionModel()
 # data.scale_counts(100)
 # data.slr(iv="Counts", dv="Speed", plot_residuals=False, plot_relationship=True)
 # data.mlr_rand_int(iv="Counts_Scaled", dv="Speed", mixed_effect='ID', show_plot=False)
 # data.mlr_rand_slope(iv='Counts_Scaled', dv='Speed', mixed_effect='ID', show_plot=False)
 
-# MIXED EFFECTS ======================================================================================================
-# Something about slopes
+class Data:
 
-"""
-sns.lmplot(x="Predicted", y='Residuals', data=performance)
+    def __init__(self, timestamp_file=None, accelerometer_file=None):
 
-ax = sns.residplot(x='Counts', y='Residuals', data=performance, lowess=True)
-ax.set(ylabel="True - Pred")
+        self.df_walks = pd.read_excel(timestamp_file)
+        self.df_walks = self.df_walks.loc[self.df_walks["ID"] ==
+                                                  int(accelerometer_file.split(".")[0].split("/")[-1].split("_")[2])]
+        self.df_walks["Start"] = pd.to_datetime(self.df_walks["Start"])
+        self.df_walks["End"] = pd.to_datetime(self.df_walks["End"])
 
-y_predict = mdf.fittedvalues
-rmse = sqrt(((y-y_predict)**2).values.mean())
-results.loc[2] = ["Mixed", rmse]
-results"""
+        self.df_epoch = pd.read_csv(accelerometer_file, usecols=["Timestamp", "AnkleAVM", "AnkleSVM"])
+        self.df_epoch["Timestamp"] = pd.to_datetime(self.df_epoch["Timestamp"])
+
+        # ============================================= RUNS METHODS ==================================================
+        self.mark_walks()
+
+        self.df_epoch_crop = self.crop_df()
+
+    def crop_df(self):
+
+        df = self.df_epoch.loc[(self.df_epoch["Timestamp"] >=
+                                self.df_walks.iloc[0]["Start"] + timedelta(seconds=-120)) &
+                               (self.df_epoch["Timestamp"] <=
+                                self.df_walks.iloc[-1]["End"] + timedelta(seconds=120))]
+
+        return df
+
+    def mark_walks(self):
+
+        walk_list = np.zeros(self.df_epoch.shape[0])
+
+        for row in self.df_walks.itertuples():
+            data = self.df_epoch.loc[(self.df_epoch["Timestamp"] >= row.Start) &
+                                          (self.df_epoch["Timestamp"] <= row.End)]
+
+            walk_list[data.index[0]:data.index[-1]] = [row.Walk for i in range(data.index[-1] - data.index[0])]
+
+        self.df_epoch["WalkMarker"] = walk_list
+
+    def calculate_means(self):
+
+        svm = []
+        avm = []
+        for walk in [1, 2, 3, 4, 5]:
+            df = self.df_epoch.loc[self.df_epoch["WalkMarker"] == walk]
+            svm.append(df["AnkleSVM"].sum())
+            avm.append(df["AnkleAVM"].mean())
+
+        self.df_walks["SVM"] = svm
+        self.df_walks["AVM"] = avm
+
+    def show_boxplot(self, accel_var):
+
+        self.df_epoch.loc[self.df_epoch["WalkMarker"] > 0].boxplot(by="WalkMarker", column=[accel_var])
+        plt.xlabel("Walk Number")
+        plt.ylabel("Counts")
+
+
+x = Data(timestamp_file="/Users/kyleweber/Desktop/TreadmillWalkTimes.xlsx",
+         accelerometer_file="/Users/kyleweber/Desktop/OND07_WTL_3032_EpochedAccelerometer.csv")
+x.calculate_means()
+x.show_boxplot("AnkleSVM")
