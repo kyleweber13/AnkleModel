@@ -9,6 +9,8 @@ import statsmodels.formula.api as smf
 import warnings
 warnings.filterwarnings('ignore')
 from datetime import timedelta
+import Filtering
+import os
 
 
 class RegressionModel:
@@ -142,9 +144,11 @@ class Data:
 
     def __init__(self, timestamp_file=None, accelerometer_file=None):
 
+        print("\nImporting {}...".format(accelerometer_file))
+
         self.df_walks = pd.read_excel(timestamp_file)
         self.df_walks = self.df_walks.loc[self.df_walks["ID"] ==
-                                                  int(accelerometer_file.split(".")[0].split("/")[-1].split("_")[2])]
+                                          int(accelerometer_file.split(".")[0].split("/")[-1].split("_")[2])]
         self.df_walks["Start"] = pd.to_datetime(self.df_walks["Start"])
         self.df_walks["End"] = pd.to_datetime(self.df_walks["End"])
 
@@ -168,14 +172,17 @@ class Data:
     def mark_walks(self):
 
         walk_list = np.zeros(self.df_epoch.shape[0])
+        speed_list = np.zeros(self.df_epoch.shape[0])
 
         for row in self.df_walks.itertuples():
             data = self.df_epoch.loc[(self.df_epoch["Timestamp"] >= row.Start) &
                                           (self.df_epoch["Timestamp"] <= row.End)]
 
             walk_list[data.index[0]:data.index[-1]] = [row.Walk for i in range(data.index[-1] - data.index[0])]
+            speed_list[data.index[0]:data.index[-1]] = [row.Speed for i in range(data.index[-1] - data.index[0])]
 
         self.df_epoch["WalkMarker"] = walk_list
+        self.df_epoch["Speed"] = speed_list
 
     def calculate_means(self):
 
@@ -183,7 +190,7 @@ class Data:
         avm = []
         for walk in [1, 2, 3, 4, 5]:
             df = self.df_epoch.loc[self.df_epoch["WalkMarker"] == walk]
-            svm.append(df["AnkleSVM"].sum())
+            svm.append(df["AnkleSVM"].mean())
             avm.append(df["AnkleAVM"].mean())
 
         self.df_walks["SVM"] = svm
@@ -195,8 +202,105 @@ class Data:
         plt.xlabel("Walk Number")
         plt.ylabel("Counts")
 
+    def plot_data(self):
 
+        plt.subplots(1, 2, figsize=(10, 6))
+
+        plt.subplot(1, 2, 1)
+        plt.plot(self.df_walks['Speed'], self.df_walks["SVM"], marker="o", color='black', markeredgecolor='red')
+        plt.xlabel("Speed (m/s)")
+        plt.ylabel("")
+        plt.ylim(0, )
+        plt.xlim(0, )
+        plt.title("SVM")
+
+        plt.subplot(1, 2, 2)
+        plt.plot(self.df_walks['Speed'], self.df_walks["AVM"], marker="o", color='black', markeredgecolor='red')
+        plt.xlabel("Speed (m/s)")
+        plt.ylabel("")
+        plt.ylim(0, )
+        plt.xlim(0, )
+        plt.title("AVM")
+
+    def filter_data(self, low_f=.025):
+
+        epoch_len = int((self.df_epoch.iloc[1]["Timestamp"] - self.df_epoch.iloc[0]["Timestamp"]).total_seconds())
+        fs = 1/epoch_len
+
+        filt = Filtering.filter_signal(data=self.df_epoch["AnkleSVM"], filter_type="lowpass",
+                                       sample_f=fs, low_f=low_f, filter_order=5)
+
+        fig, (ax1, ax2) = plt.subplots(2, sharex='col')
+        ax1.plot(self.df_epoch["Timestamp"], self.df_epoch["AnkleSVM"],
+                 color='red', label="'Raw' ({}-s epochs)".format(epoch_len))
+        ax1.legend()
+        ax2.plot(self.df_epoch["Timestamp"], filt, color='black', label="{}Hz LP".format(low_f))
+        ax2.legend()
+
+        return filt
+
+
+"""
 x = Data(timestamp_file="/Users/kyleweber/Desktop/TreadmillWalkTimes.xlsx",
-         accelerometer_file="/Users/kyleweber/Desktop/OND07_WTL_3032_EpochedAccelerometer.csv")
+         accelerometer_file="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/OND07_WTL_3044_EpochedAccelerometer.csv")
 x.calculate_means()
 x.show_boxplot("AnkleSVM")
+x.plot_data()
+filt = x.filter_data(.05)
+"""
+
+
+class AllData:
+
+    def __init__(self, folder):
+
+        self.folder = folder
+        self.df = None
+        self.file_list = sorted([i for i in os.listdir(folder) if "csv" in i])
+
+        self.slr_model = None
+
+    def import_data(self):
+
+        for file in self.file_list:
+            x = Data("/Users/kyleweber/Desktop/TreadmillWalkTimes.xlsx",
+                     accelerometer_file="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/" + file)
+
+            subj_id = int(file.split(".")[0].split("_")[2])
+
+            if file == self.file_list[0]:
+                self.df = x.df_epoch_crop.loc[x.df_epoch_crop["WalkMarker"] > 0]
+                self.df["ID"] = [subj_id for i in range(self.df.shape[0])]
+
+            if file != self.file_list[0]:
+                df = x.df_epoch_crop.loc[x.df_epoch_crop["WalkMarker"] > 0]
+                df["ID"] = [subj_id for i in range(df.shape[0])]
+
+                self.df = self.df.append(df)
+
+    def slr(self, iv, dv, plot_relationship=False):
+
+        # Create simple linear regression model
+        self.slr_model = LinearRegression(fit_intercept=True)
+        y = self.df[dv]
+        x = self.df[iv]
+
+        self.slr_model.fit(x[:, np.newaxis], y)
+
+        xfit = np.linspace(-4, 4, 1000)
+        yfit = self.slr_model.predict(xfit[:, np.newaxis])
+
+        if plot_relationship:
+            sns.lmplot(x=iv, y=dv, data=self.df, height=7, aspect=1.25)
+            plt.plot(xfit, yfit)
+            plt.ylabel(dv)
+            plt.xlabel(iv)
+            plt.title("{} = {} • {} + {}".format(dv, round(self.slr_model.coef_[0], 5), iv,
+                                                 round(self.slr_model.intercept_, 5)))
+            plt.subplots_adjust(left=.095, right=.95, top=.9, bottom=.15)
+            plt.xlim(-100, max(self.df[iv])*1.1)
+
+
+# data = AllData(folder="/Users/kyleweber/Desktop/OND07_ProcessedAnkle")
+# data.import_data()
+
